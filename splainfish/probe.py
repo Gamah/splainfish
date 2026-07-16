@@ -30,13 +30,28 @@ import numpy as np
 
 from .nnue_parser import (
     NNUEWeights, LayerStackWeights, FeatureTransformerWeights,
-    VERSION_SF16, VERSION_SF18,
     WEIGHT_SCALE_BITS, WEIGHT_SCALE, HIDDEN_ONE_VAL,
     OUTPUT_SCALE, FT_MAX_VAL, PSQT_BUCKETS, LAYER_STACKS,
-    SF16_L1, SF16_FC0_OUT, SF16_FC1_OUT,
-    SF18_L1, SF18_L2, SF18_L3,
 )
 from .features import PositionFeatures, FeatureDiff, halfka_label
+
+
+# ---------------------------------------------------------------------------
+# Layout constants for the two forward-pass styles.
+#
+# These describe the fixed geometry of each architecture's fully-connected
+# stack; they are not read from the file. Dispatch is on arch.ft_style, so the
+# names below track the style ("fold" / "concat"), not any engine version.
+# ---------------------------------------------------------------------------
+
+# "fold" style (halfka-1536): FT folds paired accumulators before fc_0.
+FOLD_L1      = 1536
+FOLD_FC0_OUT = 16    # 15 outputs + 1 skip neuron
+FOLD_FC1_OUT = 32
+
+# "concat" style (halfka-1024-threats): FT concatenates both perspectives.
+CONCAT_L2 = 32
+CONCAT_L3 = 32
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +146,7 @@ def _forward_sf16(board: chess.Board, features: PositionFeatures,
     acc_w = _accumulate_ft(features, ft, chess.WHITE, clamp_max=127)  # (1536,) SF16 clips to 127
     acc_b = _accumulate_ft(features, ft, chess.BLACK, clamp_max=127)
 
-    H = SF16_L1 // 2  # 768
+    H = FOLD_L1 // 2  # 768
 
     def _ft_fold(acc: np.ndarray) -> np.ndarray:
         """
@@ -150,8 +165,8 @@ def _forward_sf16(board: chess.Board, features: PositionFeatures,
     # fc_0: in=1536 → out=16 (FC_0_OUTPUTS+1)
     fc0_pre = _fc(ft_out, stack.fc0_weights, stack.fc0_biases)
     # SqrClippedReLU on [0:15], ClippedReLU on [0:15], skip uses [15]
-    fc0_sqr = _sqr_clipped_relu(fc0_pre[:SF16_FC0_OUT-1], WEIGHT_SCALE_BITS + 1)
-    fc0_lin = _clipped_relu(fc0_pre[:SF16_FC0_OUT-1], WEIGHT_SCALE_BITS + 1)
+    fc0_sqr = _sqr_clipped_relu(fc0_pre[:FOLD_FC0_OUT-1], WEIGHT_SCALE_BITS + 1)
+    fc0_lin = _clipped_relu(fc0_pre[:FOLD_FC0_OUT-1], WEIGHT_SCALE_BITS + 1)
     fc0_concat = np.concatenate([fc0_sqr, fc0_lin])   # (30,)
 
     # fc_1: in=30(pad32) → out=32
@@ -162,7 +177,7 @@ def _forward_sf16(board: chess.Board, features: PositionFeatures,
     fc2_pre = _fc(fc1_out, stack.fc2_weights, stack.fc2_biases)
 
     # Skip: fc_0_raw[FC_0_OUTPUTS] (index 15) * (600*OutputScale)/(127*(1<<WeightScaleBits))
-    skip_raw = float(fc0_pre[SF16_FC0_OUT - 1])
+    skip_raw = float(fc0_pre[FOLD_FC0_OUT - 1])
     skip = skip_raw * (600 * OUTPUT_SCALE) / (127 * WEIGHT_SCALE)
 
     raw_out = float(fc2_pre[0]) + skip
@@ -220,7 +235,7 @@ def _forward_sf18(board: chess.Board, features: PositionFeatures,
     fc2_pre = _fc(concat_all, stack.fc2_weights, stack.fc2_biases)
 
     # Skip: fc_0_raw[-2] - fc_0_raw[-1]
-    skip = float(fc0_pre[SF18_L2 - 2] - fc0_pre[SF18_L2 - 1])
+    skip = float(fc0_pre[CONCAT_L2 - 2] - fc0_pre[CONCAT_L2 - 1])
     raw_out = float(fc2_pre[0]) + skip
 
     numerator   = 600 * OUTPUT_SCALE
@@ -239,7 +254,7 @@ def _forward_sf18(board: chess.Board, features: PositionFeatures,
 
 def forward(board: chess.Board, features: PositionFeatures,
             weights: NNUEWeights) -> Activations:
-    if weights.version == VERSION_SF16:
+    if weights.arch.ft_style == "fold":
         return _forward_sf16(board, features, weights)
     else:
         return _forward_sf18(board, features, weights)
@@ -295,13 +310,13 @@ def _back_project(act_b: Activations, act_a: Activations,
     Returns attribution vector of shape (L1,) for each perspective separately.
     Uses linear approximation (first-order Taylor) at the midpoint activations.
     """
-    is_sf16 = weights.version == VERSION_SF16
+    is_fold = weights.arch.ft_style == "fold"
     l1 = weights.l1
 
     # --- fc2 gradient w.r.t. concat_all input ---
     w2 = stack.fc2_weights[0].astype(np.float64)   # (fc2_in,)
 
-    if is_sf16:
+    if is_fold:
         # SF16: fc_1 output (32,) is direct input to fc_2.
         # Back-project: output delta → fc1_out → fc0_concat → ft_out
         delta_fc1_out = act_a.fc1_out - act_b.fc1_out           # (32,)
@@ -310,7 +325,7 @@ def _back_project(act_b: Activations, act_a: Activations,
         delta_fc0_concat = np.concatenate([delta_fc0_sqr, delta_fc0_lin])  # (30,)
 
         # fc2 weights: (1, 32) → (32,)
-        w2_full = w2[:SF16_FC1_OUT]   # (32,)
+        w2_full = w2[:FOLD_FC1_OUT]   # (32,)
 
         # Back-project through fc1 (30→32): approx gradient at fc0_concat level
         w1 = stack.fc1_weights.astype(np.float64)   # (32, 30)
@@ -325,13 +340,13 @@ def _back_project(act_b: Activations, act_a: Activations,
         # Back-project through fc0 linear branch (15 weights from 1536 inputs)
         # fc0_weights[:15] is the linear branch (indices 0..14)
         # fc0_weights[15] is the skip neuron — excluded from concat
-        w0_lin = stack.fc0_weights[:SF16_FC0_OUT-1].astype(np.float64)   # (15, 1536)
+        w0_lin = stack.fc0_weights[:FOLD_FC0_OUT-1].astype(np.float64)   # (15, 1536)
         # Use linear half of total_fc0 (second 15 elements)
-        g_ft = w0_lin.T @ total_fc0[SF16_FC0_OUT-1:]   # (1536,)
+        g_ft = w0_lin.T @ total_fc0[FOLD_FC0_OUT-1:]   # (1536,)
         return g_ft
     else:
         # SF18
-        L2, L3 = SF18_L2, SF18_L3
+        L2, L3 = CONCAT_L2, CONCAT_L3
         w2_fc0 = w2[:L2 * 2]
         w2_fc1 = w2[L2 * 2:]
         delta_fc0_sqr = act_a.fc0_sqr - act_b.fc0_sqr
@@ -344,10 +359,9 @@ def _back_project(act_b: Activations, act_a: Activations,
 
         w1 = stack.fc1_weights.astype(np.float64)   # (L3, L2*2)
         fc1_lin_weighted = w2_fc1[L3:] * delta_fc1_lin
-        delta_fc0_via_fc1 = w1.T @ fc1_lin_weighted
+        delta_fc0_via_fc1 = w1.T @ fc1_lin_weighted   # (L2*2,) — already fc0_concat-width
 
-        total_fc0 = (w2_fc0 * delta_fc0_concat
-                     + np.concatenate([np.zeros(L2), delta_fc0_via_fc1]))
+        total_fc0 = w2_fc0 * delta_fc0_concat + delta_fc0_via_fc1
 
         w0 = stack.fc0_weights.astype(np.float64)   # (L2, L1*2)
         g_ft = w0.T @ total_fc0[L2:]   # linear branch, shape (L1*2,)
@@ -407,7 +421,7 @@ def probe(
     is_white_turn = board_before.turn == chess.WHITE
 
     # Split attribution by perspective
-    if weights.version == VERSION_SF16:
+    if weights.arch.ft_style == "fold":
         # ft_attr is (1536,) for the packed [us_lower|them_lower|us_upper|them_upper]
         # Approximate: first half → us perspective, second → them
         if is_white_turn:
@@ -428,13 +442,13 @@ def probe(
         ft_w = weights.feature_transformer
         l1 = weights.l1
         H = l1 // 2  # half-dimension (768 for SF16, 512 for SF18)
-        is_sf16 = weights.version == VERSION_SF16
+        is_fold = weights.arch.ft_style == "fold"
 
         for idx in changed:
             info = halfka_label(idx, perspective)
             w_col = ft_w.weights[idx].astype(np.float64)  # (l1,) e.g. (1536,)
 
-            if is_sf16:
+            if is_fold:
                 # attr_vec is (768,) — the folded perspective output.
                 # The gradient through the FT fold for neuron j:
                 #   d(fold_out[j]) / d(acc[j])     = clip(acc[j+H],0,127)/128

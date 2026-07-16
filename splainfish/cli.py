@@ -134,8 +134,8 @@ def main(argv=None):
             if m.get("complex_groups"):
                 print(f"  Top factors:")
                 for g in m["complex_groups"][:3]:
-                    sign = "+" if g["contribution_cp"] >= 0 else ""
-                    print(f"    • {g['group']}: {sign}{g['contribution_cp']:.2f}p ({g['pct_of_total']}%)")
+                    arrow = "▲" if g["direction"] == "positive" else "▼"
+                    print(f"    • {g['group']}: {arrow} {g['pct_of_total']}% of the change")
 
 
 if __name__ == "__main__":

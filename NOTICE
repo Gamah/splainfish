@@ -1,0 +1,32 @@
+splainfish — licensing notice
+=============================
+
+splainfish's own code (the Python package, the browser code in web/js/, the
+build tools, and the docs) is under the GamahCode license v1.2 — see LICENSE.
+
+Third-party code is NOT redistributed by this repository. The browser app loads
+it from public CDNs at runtime, which is use, not distribution:
+
+  chessground   board rendering   GPL-3.0-or-later   github.com/lichess-org/chessground
+  chess.js      move gen / PGN     BSD-2-Clause       github.com/jhlywa/chess.js
+  Stockfish     engine (WASM)      GPL-3.0            github.com/nmrugg/stockfish.js
+
+Because these are fetched at runtime and never bundled or committed, they impose
+no license terms on splainfish's own source.
+
+Two things ARE committed, and carry their own terms:
+
+  web/nnue/nn-1c0000000000.nnue
+      A Stockfish NNUE network. GPL-3.0 (the Stockfish networks are GPL-3.0).
+      Committed because GitHub Pages must serve it same-origin — no public host
+      serves the networks with CORS, so runtime fetch is impossible. It is a
+      verbatim data file; it does not change the license of any code here.
+
+  vendor/pieces-rhosgfx/  (and the generated web/css/pieces.rhosgfx.css)
+      rhosgfx chess pieces by RhosGFX (https://rhosgfx.itch.io/). CC0 1.0
+      (public domain). No conditions; credited here voluntarily.
+
+Development-only dependency (not shipped, not loaded by the app):
+
+  vendor/chess.js/   BSD-2-Clause. Used by the parity tests in tests/ so they
+                     can run under Node without a network fetch.

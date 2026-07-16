@@ -163,10 +163,83 @@ demo: demo/immortal.pgn
 	 command -v open     >/dev/null 2>&1 && open     demo/immortal.html || true
 
 # =============================================================================
+# Tests — JS/Python parity for the NNUE port
+# =============================================================================
+# The browser app re-implements the NNUE parser, feature indexing, forward pass
+# and attribution in JavaScript. These targets diff that port against the Python
+# that ships with the CLI, which is the reference implementation.
+#
+# No .nnue file or Stockfish binary is needed: ref_probe.py synthesises weights
+# and feeds probe.py directly.
+
+PARITY_REF := $(shell mktemp -d 2>/dev/null || echo /tmp/splainfish-parity)
+# The reference scripts import the splainfish package from the repo root, and
+# some targets cd into tests/ first, so use an absolute interpreter path.
+PYRUN := PYTHONPATH=$(CURDIR) $(CURDIR)/$(PYTHON)
+
+.PHONY: test test-parity test-parser test-features test-probe test-realnet test-integration
+
+test: test-parity test-realnet test-integration
+
+test-parity: test-parser test-features test-probe
+	@echo ""
+	@echo "✓ All parity checks passed"
+
+test-parser: venv deps
+	@echo "→ nnue parser (LEB128 + SIMD weight permutation)..."
+	@cd tests && $(PYRUN) ref_parser.py | node check_parser_parity.mjs
+
+test-features: venv deps
+	@echo "→ features (HalfKAv2_hm + FullThreats indexing)..."
+	@cd tests && $(PYRUN) ref_features.py | node check_features_parity.mjs
+
+test-probe: venv deps
+	@echo "→ probe (forward pass + back-projection)..."
+	@mkdir -p $(PARITY_REF)
+	@$(PYRUN) tests/ref_probe.py --out $(PARITY_REF) --games 2 --plies 6 2>/dev/null
+	@cd tests && node --max-old-space-size=6144 check_probe_parity.mjs $(PARITY_REF)
+	@rm -rf $(PARITY_REF)
+
+# End-to-end parser check against a real committed net (parse + forward pass).
+# NET defaults to the one committed under web/nnue/.
+NET ?= web/nnue/nn-1c0000000000.nnue
+test-realnet: venv deps
+	@echo "→ real-net parse + forward (NET=$(NET))..."
+	@if [ ! -f "$(NET)" ]; then echo "  skipped: $(NET) not present"; exit 0; fi
+	@$(PYRUN) tests/ref_realnet.py "$(NET)" > $(PARITY_REF).json 2>/dev/null; \
+	 cd tests && node --max-old-space-size=6144 check_realnet_parity.mjs "../$(NET)" < $(PARITY_REF).json; \
+	 rm -f $(PARITY_REF).json
+
+# End-to-end browser pipeline in Node: real Stockfish (staged lite WASM) + real
+# net + chess.js driving web/js/pipeline.js. Stages the lite engine from npm on
+# first run; skipped if npm/network is unavailable.
+SF_STAGE := tests/vendor-sf
+test-integration: venv deps
+	@echo "→ browser pipeline end-to-end (Node)..."
+	@if [ ! -f "$(NET)" ]; then echo "  skipped: $(NET) not present"; exit 0; fi
+	@if [ ! -f "$(SF_STAGE)/stockfish-18-lite-single.js" ]; then \
+	  echo "  staging Stockfish lite from npm..."; \
+	  mkdir -p $(SF_STAGE); \
+	  ( cd $(SF_STAGE) && npm pack stockfish@18.0.8 >/dev/null 2>&1 && \
+	    tar xzf stockfish-18.0.8.tgz package/index.js package/bin/stockfish-18-lite-single.js package/bin/stockfish-18-lite-single.wasm && \
+	    mv package/index.js loader.cjs && mv package/bin/stockfish-18-lite-single.* . && \
+	    rm -rf package stockfish-18.0.8.tgz ) || { echo "  skipped: could not stage engine"; exit 0; }; \
+	fi
+	@node --max-old-space-size=6144 tests/integration_pipeline.mjs
+
+# =============================================================================
+# Web assets
+# =============================================================================
+.PHONY: pieces
+
+pieces:
+	@$(PYTHON) tools/gen_pieces_css.py
+
+# =============================================================================
 # Cleanup
 # =============================================================================
 clean:
-	rm -rf __pycache__ splainfish/__pycache__ *.pyc
+	rm -rf __pycache__ splainfish/__pycache__ tests/__pycache__ *.pyc
 	rm -f report.html
 
 distclean: clean

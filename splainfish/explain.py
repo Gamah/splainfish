@@ -227,10 +227,6 @@ class Explanation:
     best_move_san:  Optional[str] = None
     best_line_san:  list[str] = None
 
-    # Neuron-level data for optional display
-    fc0_delta_top:  list[dict] = None   # top changed neurons at fc0
-    fc1_delta_top:  list[dict] = None
-
 
 def build(
     result: ProbeResult,
@@ -282,9 +278,11 @@ def build(
     simple_paragraphs: list[str] = []
 
     if quality in (MoveQuality.BEST, MoveQuality.EXCELLENT, MoveQuality.GOOD):
+        # Display Stockfish's evals, never the internal forward-pass eval — the
+        # latter's magnitude is unreliable on some nets (see README honesty).
         simple_paragraphs.append(
-            f"The evaluation barely changed ({result.eval_before_cp/100:+.2f} → "
-            f"{result.eval_after_cp/100:+.2f}), meaning this move maintained or "
+            f"The evaluation barely changed ({eval_before/100:+.2f} → "
+            f"{eval_after/100:+.2f}), meaning this move maintained or "
             f"improved {mover}'s position."
         )
         if groups:
@@ -348,34 +346,10 @@ def build(
     complex_note = (
         "Contributions are derived by back-projecting the eval delta through the NNUE "
         "network (L0→L2) to the input feature groups that changed between the two positions. "
-        "The percentages show each group's share of the total attributed change."
+        "The percentages show each group's share of the total attributed change. "
+        "Attribution shows relative direction and emphasis, not calibrated centipawns; "
+        "the evaluation numbers shown are Stockfish's."
     )
-
-    if result.sf_eval_before is not None and result.sf_eval_after is not None:
-        ours_before = result.eval_before_cp
-        ours_after  = result.eval_after_cp
-        err_before  = abs(ours_before - result.sf_eval_before)
-        err_after   = abs(ours_after  - result.sf_eval_after)
-        if err_before > 50 or err_after > 50:
-            complex_note += (
-                f" Note: our internal eval ({ours_before/100:+.2f} / {ours_after/100:+.2f}) "
-                f"differs from Stockfish's ({result.sf_eval_before/100:+.2f} / "
-                f"{result.sf_eval_after/100:+.2f}) — attribution proportions are "
-                f"still meaningful but absolute magnitudes may vary."
-            )
-
-    # Top changed neurons for optional debug display
-    import numpy as np
-    fc0_top = sorted(
-        [{"neuron": int(i), "delta": float(result.fc0_delta[i])}
-         for i in range(len(result.fc0_delta))],
-        key=lambda x: abs(x["delta"]), reverse=True
-    )[:10]
-    fc1_top = sorted(
-        [{"neuron": int(i), "delta": float(result.fc1_delta[i])}
-         for i in range(len(result.fc1_delta))],
-        key=lambda x: abs(x["delta"]), reverse=True
-    )[:10]
 
     return Explanation(
         move_san=move_san,
@@ -400,6 +374,4 @@ def build(
         top_groups=[g.group for g in groups[:5]],
         best_move_san=best_move_san,
         best_line_san=best_line_san or [],
-        fc0_delta_top=fc0_top,
-        fc1_delta_top=fc1_top,
     )

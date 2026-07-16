@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>splainfish — what the engine reacted to</title>
+
+<!-- chessground base styles (board geometry) from CDN -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.2.1/assets/chessground.base.css">
+<!-- rhosgfx pieces (CC0), committed same-origin -->
+<link rel="stylesheet" href="css/pieces.rhosgfx.css">
+<style>
+/* =========================================================
+   Design tokens — adapted from ../rotaliate
+   ========================================================= */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:      #101014;
+  --surface: #16161c;
+  --panel:   #1b1b22;
+  --border:  #2a2a33;
+  --text:    #d6d6dc;
+  --muted:   #7a7a85;
+  --accent:  #5b8def;
+  --green:   #3dd68c;
+  --red:     #e5484d;
+  --yellow:  #f0c000;
+  --mono:    ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  /* board + eval-bar helpers used by app.js */
+  --sf-white: #e8e8ea;
+  --sf-black: #34343d;
+  --sf-green: var(--green);
+  --sf-red:   var(--red);
+  --sq-light: #b9c4cc;
+  --sq-dark:  #5f7688;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+}
+
+/* ── Header ── */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+h1 {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+h1 .fish { color: var(--accent); }
+header .tagline { color: var(--muted); font-size: 12px; }
+header .spacer { margin-left: auto; }
+.link-btn {
+  font-size: 12px; color: var(--muted); text-decoration: none;
+  padding: 5px 12px; border-radius: 4px; transition: all 0.15s;
+  background: none; border: none; cursor: pointer; font-family: inherit;
+}
+.link-btn:hover { color: var(--text); }
+#bmc-header:hover { color: var(--yellow); background: rgba(240,192,0,0.06); }
+
+/* ── Generic panels ── */
+main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+[hidden] { display: none !important; }
+
+/* ── Paste view ── */
+#paste-view {
+  max-width: 760px; width: 100%; margin: 0 auto; padding: 32px 16px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.paste-intro { color: var(--muted); line-height: 1.6; }
+.paste-intro strong { color: var(--text); }
+#pgn-input {
+  width: 100%; min-height: 300px; resize: vertical;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 14px; font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  white-space: pre; overflow-wrap: normal; overflow-x: auto; tab-size: 4;
+}
+#pgn-input:focus { outline: none; border-color: var(--accent); }
+.paste-controls { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.field { display: flex; align-items: center; gap: 8px; }
+.field label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+#depth-input { accent-color: var(--accent); }
+#depth-val { font-family: var(--mono); color: var(--text); min-width: 18px; }
+.checkbox { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--muted); }
+.checkbox input { accent-color: var(--accent); }
+.btn-primary {
+  padding: 8px 22px; background: rgba(91,141,239,0.1);
+  border: 1px solid rgba(91,141,239,0.5); color: var(--accent);
+  border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;
+  font-family: inherit; transition: background 0.12s, border-color 0.12s;
+}
+.btn-primary:hover { background: rgba(91,141,239,0.2); border-color: var(--accent); }
+.btn-ghost {
+  padding: 8px 16px; background: var(--panel); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 4px; cursor: pointer; font-size: 13px;
+  font-family: inherit; transition: all 0.12s;
+}
+.btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+.error { color: var(--red); font-size: 12px; min-height: 1em; }
+
+/* ── Loading view ── */
+#loading-view {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 16px; padding: 32px;
+}
+#loading-label { font-family: var(--mono); color: var(--text); font-size: 14px; }
+.bar-track {
+  width: min(420px, 80vw); height: 8px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 5px; overflow: hidden;
+}
+#loading-bar { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; border-radius: 5px; }
+#loading-bar.indeterminate { width: 40% !important; animation: slide 1.1s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+#loading-pct { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+
+/* ── Analysis view ── */
+#analysis-view { flex: 1; display: grid; grid-template-columns: 210px 1fr 340px; min-height: 0; }
+@media (max-width: 900px) { #analysis-view { grid-template-columns: 1fr; grid-auto-rows: min-content; } }
+
+.sidebar {
+  background: var(--surface); border-right: 1px solid var(--border);
+  overflow-y: auto; padding: 12px 8px;
+}
+.move-pair { display: grid; grid-template-columns: 26px 1fr 1fr; align-items: center; gap: 2px; }
+.move-num { color: var(--muted); font-size: 11px; font-family: var(--mono); text-align: right; padding-right: 4px; }
+.move-btn {
+  display: flex; align-items: center; gap: 5px; padding: 4px 6px;
+  background: none; border: none; color: var(--text); cursor: pointer;
+  border-radius: 4px; font-size: 12.5px; font-family: inherit; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.move-btn:hover { background: var(--panel); }
+.move-btn.active { background: rgba(91,141,239,0.15); color: var(--accent); }
+.dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+.board-panel {
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  gap: 14px; padding: 20px; overflow: auto;
+}
+#move-label { font-size: 15px; font-weight: 600; font-family: var(--mono); min-height: 1.4em; }
+.eval-bar-wrap { width: min(440px, 88vw); display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--muted); }
+.eval-bar-bg {
+  flex: 1; height: 8px; border-radius: 5px; position: relative; overflow: hidden;
+  background: linear-gradient(to right, var(--sf-black) 50%, var(--sf-white) 50%);
+}
+#eval-fill { position: absolute; top: 0; bottom: 0; left: 50%; border-radius: 5px; transition: width 0.3s, background 0.3s; }
+#eval-num { font-family: var(--mono); color: var(--text); min-width: 52px; text-align: right; }
+#board { width: min(440px, 88vw); aspect-ratio: 1; border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+/* chessground board colours (rotaliate-toned) */
+.cg-wrap { --cg-light: var(--sq-light); --cg-dark: var(--sq-dark); }
+cg-board { background-color: var(--sq-light); }
+cg-board square.move-dest { background: rgba(91,141,239,0.3); }
+.board-controls { display: flex; gap: 8px; }
+.ctrl-btn {
+  padding: 7px 18px; background: var(--panel); border: 1px solid var(--border);
+  color: var(--text); border-radius: 4px; cursor: pointer; font-size: 13px; font-family: inherit;
+  transition: all 0.12s;
+}
+.ctrl-btn:hover:not(:disabled) { border-color: var(--muted); }
+.ctrl-btn:disabled { opacity: 0.35; cursor: default; }
+
+.explain-panel {
+  background: var(--surface); border-left: 1px solid var(--border);
+  overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px;
+}
+.quality-badge {
+  display: inline-block; padding: 3px 10px; border-radius: 12px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+}
+.explain-headline { font-size: 15px; font-weight: 600; line-height: 1.4; }
+.explain-para { font-size: 13px; color: #c3c3d0; line-height: 1.65; }
+.view-toggle { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; width: fit-content; }
+.toggle-btn {
+  padding: 6px 16px; font-size: 12px; cursor: pointer; background: transparent;
+  color: var(--muted); border: none; font-family: inherit; transition: all 0.12s;
+}
+.toggle-btn.active { background: rgba(91,141,239,0.15); color: var(--accent); }
+.view-body { display: flex; flex-direction: column; gap: 10px; }
+.attr-group { display: flex; flex-direction: column; gap: 5px; padding: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; }
+.attr-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.attr-name { font-size: 12.5px; font-weight: 600; }
+.attr-cp { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+.attr-bar-bg { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.attr-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.attr-sentence { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.complex-note { font-size: 11px; color: var(--muted); line-height: 1.5; border-top: 1px solid var(--border); padding-top: 10px; }
+
+/* ── About modal ── */
+.modal {
+  position: fixed; inset: 0; background: rgba(16,16,20,0.8); backdrop-filter: blur(4px);
+  z-index: 100; display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  max-width: 560px; width: 100%; max-height: 85vh; overflow-y: auto; padding: 24px;
+}
+.modal-card h2 { font-family: var(--mono); font-size: 16px; margin-bottom: 12px; }
+.modal-card h2 .fish { color: var(--accent); }
+.modal-card p { color: #c3c3d0; line-height: 1.65; margin-bottom: 12px; font-size: 13px; }
+.modal-card a { color: var(--accent); text-decoration: none; }
+.modal-card a:hover { text-decoration: underline; }
+.modal-card h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 16px 0 8px; }
+.credits { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.credits li { font-size: 12.5px; color: var(--muted); }
+.credits li strong { color: var(--text); font-weight: 600; }
+.modal-close { margin-top: 18px; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="fish">splain</span>fish</h1>
+  <span class="tagline">what the engine actually reacted to</span>
+  <span class="spacer"></span>
+  <button class="link-btn" id="about-open" type="button">About</button>
+  <a class="link-btn" id="bmc-header" href="https://buymeacoffee.com/gamah" target="_blank" rel="noopener">☕ buy me a coffee</a>
+</header>
+
+<main>
+  <!-- PASTE -->
+  <section id="paste-view">
+    <p class="paste-intro">
+      Paste a game in <strong>PGN</strong> below. splainfish runs Stockfish on every move,
+      then diffs the NNUE activations to explain <strong>why</strong> the evaluation moved —
+      in plain English — not just by how much.
+    </p>
+    <textarea id="pgn-input" spellcheck="false" placeholder='[Event "..."]
+[White "..."]
+[Black "..."]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 ...'></textarea>
+    <div class="paste-controls">
+      <div class="field">
+        <label for="depth-input">Depth</label>
+        <input type="range" id="depth-input" min="8" max="20" value="14">
+        <span id="depth-val">14</span>
+      </div>
+      <label class="checkbox"><input type="checkbox" id="only-mistakes"> Only mistakes</label>
+      <span class="spacer" style="margin-left:auto"></span>
+      <button class="btn-ghost" id="demo-btn" type="button">Try the Immortal Game</button>
+      <button class="btn-primary" id="analyse-btn" type="button">Analyse ▸</button>
+    </div>
+    <div class="error" id="paste-error"></div>
+  </section>
+
+  <!-- LOADING -->
+  <section id="loading-view" hidden>
+    <div id="loading-label">pulling StockFish source…</div>
+    <div class="bar-track"><div id="loading-bar"></div></div>
+    <div id="loading-pct"></div>
+  </section>
+
+  <!-- ANALYSIS -->
+  <section id="analysis-view" hidden>
+    <div class="sidebar" id="move-list"></div>
+    <div class="board-panel">
+      <div id="move-label">—</div>
+      <div class="eval-bar-wrap">
+        <span>Black</span>
+        <div class="eval-bar-bg"><div id="eval-fill"></div></div>
+        <span>White</span>
+        <span id="eval-num"></span>
+      </div>
+      <div id="board"></div>
+      <div class="board-controls">
+        <button class="ctrl-btn" id="btn-prev">◀ Prev</button>
+        <button class="ctrl-btn" id="btn-next">Next ▶</button>
+        <button class="btn-ghost" id="new-game-btn">New game</button>
+      </div>
+    </div>
+    <div class="explain-panel" id="explain-panel"></div>
+  </section>
+</main>
+
+<!-- ABOUT -->
+<div class="modal" id="about-modal" hidden>
+  <div class="modal-card">
+    <h2><span class="fish">splain</span>fish</h2>
+    <p>
+      Most engines tell you <em>how much</em> a move changed the evaluation.
+      splainfish explains <em>why</em>: it runs Stockfish's NNUE forward pass on both
+      positions, diffs the network activations layer by layer, and back-projects the
+      output change onto the chess concepts that changed — a pawn shield, an enemy
+      knight reaching your king's zone, a rook finding an open file.
+    </p>
+    <p>
+      Evaluations and move quality come from Stockfish. The explanations are derived
+      deterministically from the NNUE activations — no language model involved. The
+      attribution shows relative direction and emphasis, not calibrated centipawns.
+    </p>
+    <h3>Built with</h3>
+    <ul class="credits">
+      <li><strong>Stockfish</strong> — engine (WASM), loaded from CDN · GPL-3.0 · <a href="https://github.com/official-stockfish/Stockfish" target="_blank" rel="noopener">source</a></li>
+      <li><strong>chessground</strong> — board, by lichess · GPL-3.0 · <a href="https://github.com/lichess-org/chessground" target="_blank" rel="noopener">source</a></li>
+      <li><strong>chess.js</strong> — move generation &amp; PGN · BSD-2 · <a href="https://github.com/jhlywa/chess.js" target="_blank" rel="noopener">source</a></li>
+      <li><strong>rhosgfx pieces</strong> — by RhosGFX · CC0 · <a href="https://rhosgfx.itch.io/" target="_blank" rel="noopener">source</a></li>
+      <li><strong>NNUE network</strong> — a Stockfish net · GPL-3.0</li>
+    </ul>
+    <button class="btn-ghost modal-close" id="about-close" type="button">Close</button>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

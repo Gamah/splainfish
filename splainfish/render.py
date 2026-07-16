@@ -1,14 +1,18 @@
 """
-render.py — Generate a self-contained HTML report from a list of Explanation dicts.
+render.py — Generate a self-contained HTML report from Explanation dicts.
 
-The output is a single .html file with no external dependencies.
-Features:
-  - Interactive board (SVG pieces, click forward/back through moves)
-  - Per-move eval bar showing centipawn change
-  - Simple / Complex toggle (persists selection across moves)
-  - Complex view: horizontal bar chart of attribution groups
-  - Move list with quality glyphs; click to jump to any move
-  - Responsive layout
+The output is a single .html file with no external dependencies: the board uses
+the rhosgfx piece set (CC0) inlined as data URIs, styled to match the browser
+app (web/index.html), which is adapted from ../rotaliate. Features:
+
+  - Board (click / arrow-key through moves), rhosgfx pieces
+  - Per-move eval bar (Stockfish centipawns)
+  - Simple / Detailed toggle (persists selection)
+  - Detailed view: horizontal bar chart of attribution groups
+  - Move list with quality dots; click to jump
+
+Unlike the browser app this file references nothing external, so it can be
+emailed or hosted anywhere.
 """
 
 from __future__ import annotations
@@ -16,19 +20,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-
-# ---------------------------------------------------------------------------
-# Chess piece SVGs (subset of Cburnett set, public domain)
-# Embedded inline so the HTML is truly self-contained.
-# ---------------------------------------------------------------------------
-
-# We embed piece SVGs as data URIs. Each piece is a compact SVG path.
-# Pieces: K Q R B N P in White and Black.
-# Using Unicode chess symbols rendered via SVG text for compactness.
-_PIECE_UNICODE = {
-    "wK": "♔", "wQ": "♕", "wR": "♖", "wB": "♗", "wN": "♘", "wP": "♙",
-    "bK": "♚", "bQ": "♛", "bR": "♜", "bB": "♝", "bN": "♞", "bP": "♟",
-}
+from tools.gen_pieces_css import piece_data_uris
 
 _PIECE_FEN_MAP = {
     "K": "wK", "Q": "wQ", "R": "wR", "B": "wB", "N": "wN", "P": "wP",
@@ -36,607 +28,236 @@ _PIECE_FEN_MAP = {
 }
 
 
-def _fen_to_board_array(fen: str) -> list[Optional[str]]:
-    """Convert FEN position string to 64-element array (a8=0 … h1=63) of piece keys."""
-    position = fen.split()[0]
-    board = []
-    for char in position:
-        if char == "/":
-            continue
-        elif char.isdigit():
-            board.extend([None] * int(char))
-        else:
-            board.append(_PIECE_FEN_MAP.get(char))
-    return board   # index 0 = a8, index 63 = h1
-
-
-def render_html(results: list[dict], title: str = "SplainFish") -> str:
+def render_html(results: list[dict], title: str = "splainfish") -> str:
     """Render a list of Explanation dicts into a self-contained HTML string."""
-
-    # Embed the data as a JS variable
     json_data = json.dumps(results, separators=(",", ":"))
+    piece_uris = json.dumps(piece_data_uris(), separators=(",", ":"))
 
-    html = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{title}</title>
 <style>
-/* =========================================================
-   Reset & base
-   ========================================================= */
 *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
 :root {{
-  --bg:        #1a1a2e;
-  --surface:   #16213e;
-  --card:      #0f3460;
-  --accent:    #e94560;
-  --accent2:   #533483;
-  --text:      #eaeaea;
-  --muted:     #8a8aaa;
-  --border:    #2a2a4a;
-  --sq-light:  #f0d9b5;
-  --sq-dark:   #b58863;
-  --sq-hl:     rgba(235, 97, 0, 0.55);
-  --radius:    8px;
-  font-family: 'Segoe UI', system-ui, sans-serif;
-  color: var(--text);
-  background: var(--bg);
+  --bg:#101014; --surface:#16161c; --panel:#1b1b22; --border:#2a2a33;
+  --text:#d6d6dc; --muted:#7a7a85; --accent:#5b8def; --green:#3dd68c;
+  --red:#e5484d; --yellow:#f0c000;
+  --mono: ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --sq-light:#b9c4cc; --sq-dark:#5f7688;
+  --sf-white:#e8e8ea; --sf-black:#34343d;
 }}
-body {{ display: flex; flex-direction: column; min-height: 100vh; }}
+body {{ background:var(--bg); color:var(--text);
+  font-family:system-ui,-apple-system,'Segoe UI',sans-serif; font-size:13px;
+  min-height:100dvh; display:flex; flex-direction:column; overflow-x:hidden; }}
+header {{ background:var(--surface); border-bottom:1px solid var(--border);
+  padding:10px 16px; display:flex; align-items:center; gap:12px; }}
+h1 {{ font-family:var(--mono); font-size:15px; font-weight:600; letter-spacing:.5px; }}
+h1 .fish {{ color:var(--accent); }}
+header .tagline {{ color:var(--muted); font-size:12px; }}
+header .spacer {{ margin-left:auto; }}
+#bmc {{ font-size:12px; color:var(--muted); text-decoration:none; padding:5px 12px;
+  border-radius:4px; transition:all .15s; }}
+#bmc:hover {{ color:var(--yellow); background:rgba(240,192,0,.06); }}
 
-/* =========================================================
-   Layout
-   ========================================================= */
-header {{
-  padding: 16px 24px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 12px;
-}}
-header h1 {{ font-size: 1.2rem; font-weight: 600; color: var(--text); }}
-header .sub {{ font-size: 0.8rem; color: var(--muted); }}
+.layout {{ flex:1; display:grid; grid-template-columns:210px 1fr 340px; min-height:0; }}
+@media (max-width:900px) {{ .layout {{ grid-template-columns:1fr; }} }}
 
-.layout {{
-  display: grid;
-  grid-template-columns: 220px 1fr 340px;
-  grid-template-rows: 1fr;
-  flex: 1;
-  overflow: hidden;
-  height: calc(100vh - 57px);
-}}
+.sidebar {{ background:var(--surface); border-right:1px solid var(--border);
+  overflow-y:auto; padding:12px 8px; }}
+.move-pair {{ display:grid; grid-template-columns:26px 1fr 1fr; align-items:center; gap:2px; }}
+.move-num {{ color:var(--muted); font-size:11px; font-family:var(--mono);
+  text-align:right; padding-right:4px; }}
+.move-btn {{ display:flex; align-items:center; gap:5px; padding:4px 6px;
+  background:none; border:none; color:var(--text); cursor:pointer; border-radius:4px;
+  font-size:12.5px; font-family:inherit; text-align:left; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }}
+.move-btn:hover {{ background:var(--panel); }}
+.move-btn.active {{ background:rgba(91,141,239,.15); color:var(--accent); }}
+.dot {{ width:6px; height:6px; border-radius:50%; flex-shrink:0; }}
 
-/* =========================================================
-   Move list (left sidebar)
-   ========================================================= */
-.sidebar {{
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  overflow-y: auto;
-  padding: 12px 0;
-}}
-.move-pair {{
-  display: grid;
-  grid-template-columns: 28px 1fr 1fr;
-  align-items: stretch;
-  font-size: 0.82rem;
-}}
-.move-num {{
-  color: var(--muted);
-  padding: 5px 6px;
-  text-align: right;
-  line-height: 1.6;
-  font-size: 0.75rem;
-}}
-.move-btn {{
-  padding: 5px 6px;
-  cursor: pointer;
-  border-radius: 4px;
-  transition: background 0.15s;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: flex; align-items: center; gap: 3px;
-}}
-.move-btn:hover {{ background: var(--border); }}
-.move-btn.active {{ background: var(--accent2); color: #fff; }}
-.move-btn .glyph {{ font-size: 0.9em; }}
-.move-btn .dot {{
-  width: 6px; height: 6px; border-radius: 50%;
-  flex-shrink: 0;
-}}
+.board-panel {{ display:flex; flex-direction:column; align-items:center;
+  gap:14px; padding:20px; overflow:auto; }}
+#move-label {{ font-size:15px; font-weight:600; font-family:var(--mono); min-height:1.4em; }}
+.eval-wrap {{ width:min(440px,88vw); display:flex; align-items:center; gap:10px;
+  font-size:11px; color:var(--muted); }}
+.eval-bg {{ flex:1; height:8px; border-radius:5px; position:relative; overflow:hidden;
+  background:linear-gradient(to right,var(--sf-black) 50%,var(--sf-white) 50%); }}
+#eval-fill {{ position:absolute; top:0; bottom:0; left:50%; border-radius:5px;
+  transition:width .3s,background .3s; }}
+#eval-num {{ font-family:var(--mono); color:var(--text); min-width:52px; text-align:right; }}
 
-/* =========================================================
-   Board panel (center)
-   ========================================================= */
-.board-panel {{
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 20px;
-  overflow: auto;
-}}
-.board-wrap {{
-  position: relative;
-  user-select: none;
-}}
-.board-svg {{
-  width: min(420px, 90vw);
-  height: min(420px, 90vw);
-  display: block;
-}}
-.board-controls {{
-  display: flex; gap: 8px; align-items: center;
-}}
-.ctrl-btn {{
-  background: var(--card);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 8px 18px;
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition: background 0.15s;
-}}
-.ctrl-btn:hover {{ background: var(--accent2); }}
-.ctrl-btn:disabled {{ opacity: 0.4; cursor: default; }}
+.board {{ width:min(440px,88vw); aspect-ratio:1; display:grid;
+  grid-template-columns:repeat(8,1fr); grid-template-rows:repeat(8,1fr);
+  border:1px solid var(--border); border-radius:4px; overflow:hidden;
+  box-shadow:0 8px 32px rgba(0,0,0,.5); user-select:none; }}
+.sq {{ position:relative; }}
+.sq.light {{ background:var(--sq-light); }}
+.sq.dark {{ background:var(--sq-dark); }}
+.sq.hl::before {{ content:""; position:absolute; inset:0; background:rgba(91,141,239,.32); }}
+.sq .pc {{ position:absolute; inset:6%; background-size:contain;
+  background-repeat:no-repeat; background-position:center; z-index:1; }}
+.sq .coord {{ position:absolute; font-size:9px; font-family:var(--mono); opacity:.7; }}
+.sq .coord.file {{ right:2px; bottom:1px; }}
+.sq .coord.rank {{ left:2px; top:1px; }}
 
-.move-label {{
-  font-size: 1.1rem;
-  font-weight: 600;
-  text-align: center;
-  min-height: 1.6em;
-}}
-.eval-bar-wrap {{
-  width: min(420px, 90vw);
-  display: flex; align-items: center; gap: 10px;
-}}
-.eval-bar-bg {{
-  flex: 1; height: 10px; border-radius: 5px;
-  background: linear-gradient(to right, #222 50%, #eee 50%);
-  position: relative; overflow: hidden;
-}}
-.eval-bar-fill {{
-  position: absolute; top: 0; bottom: 0; left: 50%;
-  transition: width 0.3s, background 0.3s;
-  border-radius: 5px;
-}}
-.eval-num {{ font-size: 0.85rem; color: var(--muted); min-width: 48px; text-align: right; }}
+.controls {{ display:flex; gap:8px; }}
+.ctrl {{ padding:7px 18px; background:var(--panel); border:1px solid var(--border);
+  color:var(--text); border-radius:4px; cursor:pointer; font-size:13px;
+  font-family:inherit; transition:all .12s; }}
+.ctrl:hover:not(:disabled) {{ border-color:var(--muted); }}
+.ctrl:disabled {{ opacity:.35; cursor:default; }}
 
-/* =========================================================
-   Explanation panel (right)
-   ========================================================= */
-.explain-panel {{
-  background: var(--surface);
-  border-left: 1px solid var(--border);
-  overflow-y: auto;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}}
-.quality-badge {{
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 12px;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-}}
-.explain-headline {{
-  font-size: 1rem;
-  font-weight: 600;
-  line-height: 1.4;
-}}
-.explain-para {{
-  font-size: 0.88rem;
-  color: #c8c8e0;
-  line-height: 1.6;
-}}
-
-/* Toggle */
-.view-toggle {{
-  display: flex;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  width: fit-content;
-}}
-.toggle-btn {{
-  padding: 6px 16px;
-  font-size: 0.82rem;
-  cursor: pointer;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  transition: background 0.15s, color 0.15s;
-}}
-.toggle-btn.active {{
-  background: var(--accent2);
-  color: #fff;
-}}
-
-.view-simple, .view-complex {{ display: none; flex-direction: column; gap: 12px; }}
-.view-simple.visible, .view-complex.visible {{ display: flex; }}
-
-/* Complex: attribution bars */
-.attr-group {{
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px;
-  background: var(--card);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-}}
-.attr-header {{
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}}
-.attr-name {{
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--text);
-  flex: 1;
-}}
-.attr-cp {{
-  font-size: 0.78rem;
-  color: var(--muted);
-  white-space: nowrap;
-}}
-.attr-bar-bg {{
-  height: 6px;
-  border-radius: 3px;
-  background: var(--border);
-  overflow: hidden;
-}}
-.attr-bar-fill {{
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.3s;
-}}
-.attr-sentence {{
-  font-size: 0.78rem;
-  color: var(--muted);
-  line-height: 1.5;
-  margin-top: 2px;
-}}
-.complex-note {{
-  font-size: 0.72rem;
-  color: var(--muted);
-  line-height: 1.5;
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
-}}
-
-/* empty state */
-.empty-state {{
-  color: var(--muted);
-  font-size: 0.88rem;
-  text-align: center;
-  margin-top: 40px;
-}}
-
-/* scrollbar */
-::-webkit-scrollbar {{ width: 5px; height: 5px; }}
-::-webkit-scrollbar-track {{ background: transparent; }}
-::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 3px; }}
+.explain {{ background:var(--surface); border-left:1px solid var(--border);
+  overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:14px; }}
+.badge {{ display:inline-block; padding:3px 10px; border-radius:12px; font-size:11px;
+  font-weight:700; letter-spacing:.5px; text-transform:uppercase; }}
+.headline {{ font-size:15px; font-weight:600; line-height:1.4; }}
+.para {{ font-size:13px; color:#c3c3d0; line-height:1.65; }}
+.toggle {{ display:flex; border:1px solid var(--border); border-radius:4px;
+  overflow:hidden; width:fit-content; }}
+.tbtn {{ padding:6px 16px; font-size:12px; cursor:pointer; background:transparent;
+  color:var(--muted); border:none; font-family:inherit; transition:all .12s; }}
+.tbtn.active {{ background:rgba(91,141,239,.15); color:var(--accent); }}
+.vbody {{ display:flex; flex-direction:column; gap:10px; }}
+.attr {{ display:flex; flex-direction:column; gap:5px; padding:10px;
+  background:var(--panel); border:1px solid var(--border); border-radius:4px; }}
+.attr-h {{ display:flex; justify-content:space-between; align-items:center; gap:8px; }}
+.attr-name {{ font-size:12.5px; font-weight:600; }}
+.attr-cp {{ font-size:11px; color:var(--muted); font-family:var(--mono); }}
+.attr-bg {{ height:6px; border-radius:3px; background:var(--border); overflow:hidden; }}
+.attr-fill {{ height:100%; border-radius:3px; transition:width .3s; }}
+.attr-s {{ font-size:12px; color:var(--muted); line-height:1.5; }}
+.note {{ font-size:11px; color:var(--muted); line-height:1.5;
+  border-top:1px solid var(--border); padding-top:10px; }}
+::-webkit-scrollbar {{ width:6px; height:6px; }}
+::-webkit-scrollbar-thumb {{ background:var(--border); border-radius:3px; }}
 </style>
 </head>
 <body>
 <header>
-  <div>
-    <h1>SplainFish</h1>
-    <div class="sub">NNUE-backed move analysis · Stockfish 18</div>
-  </div>
+  <h1><span class="fish">splain</span>fish</h1>
+  <span class="tagline">what the engine actually reacted to</span>
+  <span class="spacer"></span>
+  <a id="bmc" href="https://buymeacoffee.com/gamah" target="_blank" rel="noopener">☕ buy me a coffee</a>
 </header>
-
 <div class="layout">
-  <!-- LEFT: move list -->
-  <div class="sidebar" id="moveList"></div>
-
-  <!-- CENTER: board -->
+  <div class="sidebar" id="move-list"></div>
   <div class="board-panel">
-    <div class="move-label" id="moveLabel">Select a move</div>
-    <div class="eval-bar-wrap">
-      <span style="font-size:0.75rem;color:var(--muted)">Black</span>
-      <div class="eval-bar-bg">
-        <div class="eval-bar-fill" id="evalBarFill"></div>
-      </div>
-      <span style="font-size:0.75rem;color:var(--muted)">White</span>
-      <span class="eval-num" id="evalNum"></span>
+    <div id="move-label">—</div>
+    <div class="eval-wrap">
+      <span>Black</span>
+      <div class="eval-bg"><div id="eval-fill"></div></div>
+      <span>White</span><span id="eval-num"></span>
     </div>
-    <div class="board-wrap">
-      <svg class="board-svg" id="boardSvg" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg"></svg>
-    </div>
-    <div class="board-controls">
-      <button class="ctrl-btn" id="btnPrev" onclick="navigate(-1)">◀ Prev</button>
-      <button class="ctrl-btn" id="btnNext" onclick="navigate(1)">Next ▶</button>
+    <div class="board" id="board"></div>
+    <div class="controls">
+      <button class="ctrl" id="prev">◀ Prev</button>
+      <button class="ctrl" id="next">Next ▶</button>
     </div>
   </div>
-
-  <!-- RIGHT: explanation -->
-  <div class="explain-panel" id="explainPanel">
-    <div class="empty-state">Select a move from the list to see the explanation.</div>
-  </div>
+  <div class="explain" id="explain"></div>
 </div>
-
 <script>
-// =========================================================
-// Data
-// =========================================================
 const MOVES = {json_data};
-
-// =========================================================
-// State
-// =========================================================
-let currentIdx = -1;
-// "simple" | "complex"
-let viewMode = localStorage.getItem("ce_viewMode") || "simple";
-
-// =========================================================
-// Board rendering
-// =========================================================
-const PIECE_UNICODE = {{
-  wK:"♔",wQ:"♕",wR:"♖",wB:"♗",wN:"♘",wP:"♙",
-  bK:"♚",bQ:"♛",bR:"♜",bB:"♝",bN:"♞",bP:"♟"
-}};
-const PIECE_FEN = {{
-  K:"wK",Q:"wQ",R:"wR",B:"wB",N:"wN",P:"wP",
-  k:"bK",q:"bQ",r:"bR",b:"bB",n:"bN",p:"bP"
-}};
+const PIECES = {piece_uris};
+const FEN_MAP = {{K:"wK",Q:"wQ",R:"wR",B:"wB",N:"wN",P:"wP",k:"bK",q:"bQ",r:"bR",b:"bB",n:"bN",p:"bP"}};
+let idx = -1;
+let viewMode = localStorage.getItem("sf_viewMode") || "simple";
 
 function fenToArray(fen) {{
-  const pos = fen.split(" ")[0];
-  const arr = [];
+  const pos = fen.split(" ")[0]; const arr = [];
   for (const ch of pos) {{
     if (ch === "/") continue;
     else if (/\\d/.test(ch)) for (let i=0;i<+ch;i++) arr.push(null);
-    else arr.push(PIECE_FEN[ch] || null);
+    else arr.push(FEN_MAP[ch] || null);
   }}
-  return arr; // index 0 = a8, 63 = h1
+  return arr; // 0=a8 .. 63=h1
 }}
+function esc(s) {{ return String(s).replace(/[&<>"]/g,c=>({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}}[c])); }}
 
-function renderBoard(fen, fromSq, toSq) {{
-  const svg = document.getElementById("boardSvg");
-  const arr = fenToArray(fen);
-  const SQ = 50;
-  const files = "abcdefgh";
-  let out = "";
-
-  // Squares
-  for (let r = 0; r < 8; r++) {{
-    for (let f = 0; f < 8; f++) {{
-      const idx = r * 8 + f;
-      const x = f * SQ, y = r * SQ;
-      const light = (r + f) % 2 === 0;
-      let fill = light ? "#f0d9b5" : "#b58863";
-
-      // Rank/file labels
-      if (f === 0) out += `<text x="${{x+2}}" y="${{y+12}}" font-size="10" fill="${{light?"#b58863":"#f0d9b5"}}" font-family="sans-serif">${{8-r}}</text>`;
-      if (r === 7) out += `<text x="${{x+38}}" y="${{y+48}}" font-size="10" fill="${{light?"#b58863":"#f0d9b5"}}" font-family="sans-serif">${{files[f]}}</text>`;
-
-      // Move highlight
-      const sqName = files[f] + (8-r);
-      const hl = (sqName === fromSq || sqName === toSq);
-      if (hl) fill = light ? "#cdd16f" : "#aaa23a";
-
-      out += `<rect x="${{x}}" y="${{y}}" width="${{SQ}}" height="${{SQ}}" fill="${{fill}}"/>`;
-
-      // Piece
-      const piece = arr[idx];
-      if (piece) {{
-        const isWhite = piece[0] === "w";
-        const sym = PIECE_UNICODE[piece];
-        out += `<text x="${{x+SQ/2}}" y="${{y+SQ/2+12}}"
-          text-anchor="middle" font-size="34"
-          fill="${{isWhite ? "#fff" : "#000"}}"
-          stroke="${{isWhite ? "#000" : "#fff"}}"
-          stroke-width="0.8"
-          paint-order="stroke"
-          font-family="serif">${{sym}}</text>`;
-      }}
-    }}
+function renderBoard(fen, from, to) {{
+  const arr = fenToArray(fen); const files="abcdefgh"; let html="";
+  for (let r=0;r<8;r++) for (let f=0;f<8;f++) {{
+    const i=r*8+f; const light=(r+f)%2===0;
+    const sqName=files[f]+(8-r);
+    const hl=(sqName===from||sqName===to)?" hl":"";
+    let inner="";
+    if (f===0) inner+=`<span class="coord rank" style="color:${{light?'var(--sq-dark)':'var(--sq-light)'}}">${{8-r}}</span>`;
+    if (r===7) inner+=`<span class="coord file" style="color:${{light?'var(--sq-dark)':'var(--sq-light)'}}">${{files[f]}}</span>`;
+    const p=arr[i];
+    if (p) inner+=`<span class="pc" style="background-image:url('${{PIECES[p]}}')"></span>`;
+    html+=`<div class="sq ${{light?'light':'dark'}}${{hl}}">${{inner}}</div>`;
   }}
+  document.getElementById("board").innerHTML=html;
+}}
+function uci(s) {{ return (!s||s.length<4)?[null,null]:[s.slice(0,2),s.slice(2,4)]; }}
 
-  svg.innerHTML = out;
+function updateEval(cp) {{
+  const fill=document.getElementById("eval-fill"), num=document.getElementById("eval-num");
+  const c=Math.max(-600,Math.min(600,cp)), pct=(c/1200)*50;
+  if (cp>=0) {{ fill.style.left="50%"; fill.style.width=pct+"%"; fill.style.background="var(--sf-white)"; }}
+  else {{ fill.style.left=(50+pct)+"%"; fill.style.width=(-pct)+"%"; fill.style.background="var(--sf-black)"; }}
+  num.textContent=(cp>=0?"+":"−")+(Math.abs(cp)/100).toFixed(2);
 }}
 
-function uciToSquares(uci) {{
-  if (!uci || uci.length < 4) return [null, null];
-  return [uci.slice(0,2), uci.slice(2,4)];
-}}
-
-// =========================================================
-// Eval bar
-// =========================================================
-function updateEvalBar(cp) {{
-  const fill = document.getElementById("evalBarFill");
-  const num  = document.getElementById("evalNum");
-  // cp is White's perspective; clamp to ±600cp for display
-  const clamped = Math.max(-600, Math.min(600, cp));
-  const pct = (clamped / 1200) * 50;   // ±50% from center
-  if (cp >= 0) {{
-    fill.style.left = "50%";
-    fill.style.width = pct + "%";
-    fill.style.background = "#eee";
-  }} else {{
-    fill.style.left = (50 + pct) + "%";
-    fill.style.width = (-pct) + "%";
-    fill.style.background = "#333";
+function buildList() {{
+  let html="", open=false;
+  for (let i=0;i<MOVES.length;i++) {{
+    const m=MOVES[i];
+    if (m.color==="white") {{ if(open) html+="</div>"; html+=`<div class="move-pair"><span class="move-num">${{m.move_number}}.</span>`; open=true; }}
+    html+=`<button class="move-btn" id="mb${{i}}" onclick="sel(${{i}})"><span class="dot" style="background:${{m.quality_color}}"></span><span>${{esc(m.move_san)}}${{esc(m.quality_glyph||"")}}</span></button>`;
+    if (m.color==="black"||i===MOVES.length-1) {{ if(m.color==="white") html+="<span></span>"; html+="</div>"; open=false; }}
   }}
-  const pawns = Math.abs(cp) / 100;
-  num.textContent = (cp >= 0 ? "+" : "-") + pawns.toFixed(2);
+  document.getElementById("move-list").innerHTML=html;
 }}
 
-// =========================================================
-// Move list
-// =========================================================
-function buildMoveList() {{
-  const el = document.getElementById("moveList");
-  let html = "";
-  let pairOpen = false;
-  let moveNum = null;
-
-  for (let i = 0; i < MOVES.length; i++) {{
-    const m = MOVES[i];
-    if (m.color === "white") {{
-      if (pairOpen) html += "</div>";
-      html += `<div class="move-pair">`;
-      html += `<div class="move-num">${{m.move_number}}.</div>`;
-      pairOpen = true;
-      moveNum = m.move_number;
-    }}
-    const glyph = m.quality_glyph || "";
-    const dot = `<span class="dot" style="background:${{m.quality_color}}"></span>`;
-    html += `<div class="move-btn" id="mb${{i}}" onclick="selectMove(${{i}})">
-      ${{dot}}<span>${{m.move_san}}${{glyph}}</span></div>`;
-
-    // If black move or last move, close pair
-    if (m.color === "black" || i === MOVES.length - 1) {{
-      if (m.color === "white") html += `<div></div>`; // empty black slot
-      html += "</div>";
-      pairOpen = false;
-    }}
-  }}
-  el.innerHTML = html;
-}}
-
-// =========================================================
-// Explanation panel
-// =========================================================
-function renderExplanation(m) {{
-  const panel = document.getElementById("explainPanel");
-
-  // Attribution bar chart for complex view
-  let attrHtml = "";
-  if (m.complex_groups && m.complex_groups.length > 0) {{
-    const maxPct = Math.max(...m.complex_groups.map(g => g.pct_of_total));
+function renderExplain(m) {{
+  let attr="";
+  if (m.complex_groups && m.complex_groups.length) {{
+    const mx=Math.max(...m.complex_groups.map(g=>g.pct_of_total));
     for (const g of m.complex_groups) {{
-      const barW = maxPct > 0 ? (g.pct_of_total / maxPct * 100) : 0;
-      const barColor = g.direction === "positive" ? "#5aa65a" : "#c03030";
-      const cpSign = g.contribution_cp >= 0 ? "+" : "";
-      attrHtml += `
-      <div class="attr-group">
-        <div class="attr-header">
-          <div class="attr-name">${{g.group}}</div>
-          <div class="attr-cp">${{cpSign}}${{g.contribution_cp.toFixed(2)}} pawns (${{g.pct_of_total}}%)</div>
-        </div>
-        <div class="attr-bar-bg">
-          <div class="attr-bar-fill" style="width:${{barW}}%;background:${{barColor}}"></div>
-        </div>
-        <div class="attr-sentence">${{g.sentence}}</div>
-      </div>`;
+      const w=mx>0?(g.pct_of_total/mx*100):0;
+      const col=g.direction==="positive"?"var(--green)":"var(--red)";
+      attr+=`<div class="attr"><div class="attr-h"><span class="attr-name">${{esc(g.group)}}</span><span class="attr-cp">${{g.pct_of_total}}%</span></div><div class="attr-bg"><div class="attr-fill" style="width:${{w}}%;background:${{col}}"></div></div><div class="attr-s">${{esc(g.sentence)}}</div></div>`;
     }}
-    attrHtml += `<div class="complex-note">${{m.complex_note || ""}}</div>`;
-  }} else {{
-    attrHtml = `<div class="explain-para">No attribution data available for this move.</div>`;
-  }}
-
-  // Simple paragraphs
-  const simpleParas = (m.simple_paragraphs || [])
-    .map(p => `<div class="explain-para">${{p}}</div>`).join("");
-
-  const isSimple = viewMode === "simple";
-  const isCx     = viewMode === "complex";
-
-  panel.innerHTML = `
-    <div style="display:flex;flex-direction:column;gap:4px">
-      <span class="quality-badge" style="background:${{m.quality_color}}22;color:${{m.quality_color}};border:1px solid ${{m.quality_color}}44">
-        ${{m.quality_label}}
-      </span>
-      <div class="explain-headline">${{m.simple_headline || m.move_san}}</div>
-    </div>
-
-    <div class="view-toggle">
-      <button class="toggle-btn ${{isSimple?"active":""}}" onclick="setView('simple')">Simple</button>
-      <button class="toggle-btn ${{isCx?"active":""}}" onclick="setView('complex')">Detailed</button>
-    </div>
-
-    <div class="view-simple ${{isSimple?"visible":""}}" id="viewSimple">
-      ${{simpleParas || '<div class="explain-para">No explanation available.</div>'}}
-    </div>
-    <div class="view-complex ${{isCx?"visible":""}}" id="viewComplex">
-      ${{attrHtml}}
-    </div>
-  `;
+    attr+=`<div class="note">${{esc(m.complex_note||"")}}</div>`;
+  }} else attr=`<div class="para">No attribution data for this move.</div>`;
+  const paras=(m.simple_paragraphs||[]).map(p=>`<div class="para">${{esc(p)}}</div>`).join("");
+  const s=viewMode==="simple";
+  document.getElementById("explain").innerHTML=`
+    <div><span class="badge" style="background:${{m.quality_color}}22;color:${{m.quality_color}};border:1px solid ${{m.quality_color}}55">${{esc(m.quality_label)}}</span></div>
+    <div class="headline">${{esc(m.simple_headline||m.move_san)}}</div>
+    <div class="toggle"><button class="tbtn ${{s?'active':''}}" onclick="setView('simple')">Simple</button><button class="tbtn ${{s?'':'active'}}" onclick="setView('complex')">Detailed</button></div>
+    <div class="vbody vsimple" ${{s?'':'hidden'}}>${{paras||'<div class="para">No explanation available.</div>'}}</div>
+    <div class="vbody vcomplex" ${{s?'hidden':''}}>${{attr}}</div>`;
 }}
-
-// =========================================================
-// Navigation
-// =========================================================
-function selectMove(idx) {{
-  if (idx < 0 || idx >= MOVES.length) return;
-  currentIdx = idx;
-  const m = MOVES[idx];
-
-  // Update active in list
-  document.querySelectorAll(".move-btn").forEach(b => b.classList.remove("active"));
-  const btn = document.getElementById("mb" + idx);
-  if (btn) {{ btn.classList.add("active"); btn.scrollIntoView({{block:"nearest"}}); }}
-
-  // Board
-  const [fromSq, toSq] = uciToSquares(m.move_uci);
-  renderBoard(m.fen_after, fromSq, toSq);
-
-  // Label
-  const num = m.move_number;
-  const dots = m.color === "black" ? "..." : ".";
-  document.getElementById("moveLabel").textContent =
-    `${{num}}${{dots}} ${{m.move_san}}${{m.quality_glyph || ""}}`;
-
-  // Eval bar
-  updateEvalBar(m.sf_eval_after ?? m.eval_after_cp ?? 0);
-
-  // Explanation
-  renderExplanation(m);
-
-  // Nav buttons
-  document.getElementById("btnPrev").disabled = idx === 0;
-  document.getElementById("btnNext").disabled = idx === MOVES.length - 1;
-}}
-
-function navigate(dir) {{
-  selectMove(currentIdx + dir);
-}}
-
 function setView(mode) {{
-  viewMode = mode;
-  localStorage.setItem("ce_viewMode", mode);
-  // Update toggle buttons
-  document.querySelectorAll(".toggle-btn").forEach(b => {{
-    b.classList.toggle("active", b.textContent.toLowerCase().startsWith(mode));
-  }});
-  // Swap visible divs
-  const simple  = document.getElementById("viewSimple");
-  const complex = document.getElementById("viewComplex");
-  if (simple)  simple.classList.toggle("visible",  mode === "simple");
-  if (complex) complex.classList.toggle("visible", mode === "complex");
+  viewMode=mode; localStorage.setItem("sf_viewMode",mode);
+  document.querySelectorAll(".tbtn").forEach(b=>b.classList.toggle("active",b.textContent.toLowerCase().startsWith(mode==="simple"?"simple":"detail")));
+  const si=document.querySelector(".vsimple"), cx=document.querySelector(".vcomplex");
+  if (si) si.hidden=mode!=="simple"; if (cx) cx.hidden=mode!=="complex";
 }}
 
-// Keyboard nav
-document.addEventListener("keydown", e => {{
-  if (e.key === "ArrowLeft")  navigate(-1);
-  if (e.key === "ArrowRight") navigate(1);
-}});
-
-// =========================================================
-// Init
-// =========================================================
-buildMoveList();
-if (MOVES.length > 0) {{
-  // Start on first significant move, or just move 0
-  const firstBad = MOVES.findIndex(m => ["inaccuracy","mistake","blunder"].includes(m.quality));
-  selectMove(firstBad >= 0 ? firstBad : 0);
+function sel(i) {{
+  if (i<0||i>=MOVES.length) return; idx=i; const m=MOVES[i];
+  document.querySelectorAll(".move-btn").forEach(b=>b.classList.remove("active"));
+  const b=document.getElementById("mb"+i); if(b){{b.classList.add("active");b.scrollIntoView({{block:"nearest"}});}}
+  const [f,t]=uci(m.move_uci); renderBoard(m.fen_after,f,t);
+  const dots=m.color==="black"?"…":"."; document.getElementById("move-label").textContent=`${{m.move_number}}${{dots}} ${{m.move_san}}${{m.quality_glyph||""}}`;
+  updateEval(m.sf_eval_after ?? m.eval_after_cp ?? 0);
+  renderExplain(m);
+  document.getElementById("prev").disabled=i===0;
+  document.getElementById("next").disabled=i===MOVES.length-1;
 }}
+function nav(d) {{ sel(idx+d); }}
+document.getElementById("prev").onclick=()=>nav(-1);
+document.getElementById("next").onclick=()=>nav(1);
+document.addEventListener("keydown",e=>{{ if(e.key==="ArrowLeft")nav(-1); if(e.key==="ArrowRight")nav(1); }});
+buildList();
+if (MOVES.length) {{ const bad=MOVES.findIndex(m=>["inaccuracy","mistake","blunder"].includes(m.quality)); sel(bad>=0?bad:0); }}
 </script>
 </body>
 </html>"""
-
-    return html

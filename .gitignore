@@ -7,8 +7,18 @@ __pycache__/
 # Stockfish build
 stockfish-src/
 
-# NNUE weights (large binary — don't commit to repo)
+# NNUE weights (large binary) are not committed by default...
 *.nnue
+# ...EXCEPT the one the browser app serves same-origin (no CORS host exists for
+# it, so GitHub Pages must serve it directly). Must be a plain committed file —
+# Git LFS pointers are NOT resolved by Pages.
+!web/nnue/*.nnue
+
+# Test-only Stockfish WASM (staged by `make test-integration`, GPL-3 + large)
+tests/vendor-sf/
+
+# Python wheels/deps staged for local parity tests
+tests/pylibs/
 
 # Generated reports (the demo HTML IS committed; others are not)
 report.html
