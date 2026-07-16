@@ -322,6 +322,17 @@ cg-board square.move-dest { background: rgba(91,141,239,0.3); }
       attribution shows relative direction and emphasis, not calibrated centipawns.
     </p>
     <p>
+      <strong>What the percentages mean.</strong> In the detailed view each concept
+      shows a percentage. That is the concept's <em>share of the total NNUE
+      attribution magnitude</em> — which concepts the network's internal eval change
+      fell on, relative to each other — and it is normalised to add up to 100%. It is
+      <em>not</em> a fraction of the pawn loss: the loss and the label come from
+      Stockfish, while the percentages come from the separate NNUE forward pass and
+      are not calibrated to it. That forward pass can misjudge sharp tactical
+      positions; when it disagrees with Stockfish, the detailed view flips the bars
+      to match the engine and flags the move as unreliable.
+    </p>
+    <p>
       Curious what <em>Best</em>, <em>Inaccuracy</em>, or <em>Blunder</em> actually
       mean, and how the thresholds are set? See
       <a href="https://github.com/Gamah/splainfish/blob/master/docs/move-quality-labels.md" target="_blank" rel="noopener">the move-quality labels reference</a>.
