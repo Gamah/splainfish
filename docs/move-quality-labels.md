@@ -64,3 +64,31 @@ Stockfish's evaluation, never from the NNUE forward pass.
 
 No language model is involved anywhere; the explanations are derived
 deterministically from the activations.
+
+## Where the concepts are defined in the code
+
+The concept names you see in explanations — "enemy pawn structure", "own pawn
+shield", "enemy knight attacking king zone", and so on — are not free text. Each
+one is produced by two small, reviewable pieces of code:
+
+1. **Bucketing a feature into a concept** —
+   [`groupLabel()` in `web/js/nnue/probe.js`](https://github.com/Gamah/splainfish/blob/master/web/js/nnue/probe.js#L346).
+   Every NNUE input feature that changed is a (piece colour, piece type,
+   king-relative square) triple. `groupLabel()` maps that triple to a concept:
+   e.g. an opponent pawn that is *not* near your king becomes
+   `enemy pawn structure`, an opponent knight *near* your king becomes
+   `enemy knight attacking king zone`. The "near the king" test is a single
+   king-bucket threshold (`att.kingBucket <= 7`), also visible in that function.
+
+2. **Turning a concept into a sentence** —
+   [`GROUP_TEMPLATES` in `web/js/explain.js`](https://github.com/Gamah/splainfish/blob/master/web/js/explain.js#L53).
+   Each concept has a `positive` and `negative` phrasing; the sign of the
+   attribution picks which one is shown, with `{mover}`/`{enemy}` filled in.
+
+So to audit any explanation, read those two functions: `groupLabel()` decides
+*which* concept a change belongs to, and `GROUP_TEMPLATES` decides *how it is
+worded*. The Python reference implementation mirrors both
+(`splainfish/probe.py` and `splainfish/explain.py`) so the CLI and browser agree.
+
+> Line anchors above can drift as the code changes; if one points at the wrong
+> line, search the linked file for `groupLabel` or `GROUP_TEMPLATES`.
