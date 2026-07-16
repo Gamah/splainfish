@@ -229,17 +229,24 @@ function esc(s) {
 function renderExplanation(m) {
   let attrHtml = '';
   if (m.complex_groups && m.complex_groups.length) {
+    // Groups arrive sorted by |contribution| (biggest offset from 0 first).
+    // Each half of the track is at most 50% wide; the largest magnitude fills it.
     const maxPct = Math.max(...m.complex_groups.map((g) => g.pct_of_total));
     for (const g of m.complex_groups) {
-      const barW = maxPct > 0 ? (g.pct_of_total / maxPct) * 100 : 0;
-      const barColor = g.direction === 'positive' ? 'var(--sf-green)' : 'var(--sf-red)';
+      const isPos = g.direction === 'positive';
+      const halfW = maxPct > 0 ? (g.pct_of_total / maxPct) * 50 : 0;
+      const barColor = isPos ? 'var(--sf-green)' : 'var(--sf-red)';
+      const sign = isPos ? '+' : '−';
       attrHtml += `
         <div class="attr-group">
           <div class="attr-header">
             <span class="attr-name">${esc(g.group)}</span>
-            <span class="attr-cp">${g.pct_of_total}%</span>
+            <span class="attr-cp" style="color:${barColor}">${sign}${g.pct_of_total}%</span>
           </div>
-          <div class="attr-bar-bg"><div class="attr-bar-fill" style="width:${barW}%;background:${barColor}"></div></div>
+          <div class="attr-bar-bg">
+            <div class="attr-bar-fill ${isPos ? 'pos' : 'neg'}" style="width:${halfW}%;background:${barColor}"></div>
+            <div class="attr-bar-center"></div>
+          </div>
           <div class="attr-sentence">${esc(g.sentence)}</div>
         </div>`;
     }
