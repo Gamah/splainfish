@@ -227,6 +227,10 @@ class Explanation:
     best_move_san:  Optional[str] = None
     best_line_san:  list[str] = None
 
+    # Set when the NNUE attribution disagreed with Stockfish and was flipped.
+    attribution_unreliable: bool = False
+    attribution_warning:    str = ""
+
 
 def build(
     result: ProbeResult,
@@ -255,6 +259,25 @@ def build(
 
     groups = result.grouped_attributions
     is_complex = _is_complex(groups, sf_delta)
+
+    # Anchor the attribution's overall direction to Stockfish's verdict. The
+    # internal NNUE forward pass can misjudge sharp/tactical positions, so when its
+    # net attribution points the opposite way from Stockfish's eval change for the
+    # mover (e.g. a queen blunder whose bars read positive because it grabbed a
+    # pawn), flip the whole picture so green/red matches the outcome, and flag the
+    # move as unreliable so the UI can caution the reader.
+    mover_signed_delta = sf_delta if moving_color == chess.WHITE else -sf_delta
+    net_contribution = sum(g.contribution for g in groups)
+    decisive = abs(mover_signed_delta) >= 40  # ≥0.4 pawns: SF has a clear verdict
+    attribution_unreliable = bool(
+        decisive and net_contribution != 0
+        and (net_contribution > 0) != (mover_signed_delta > 0)
+    )
+    attr_sign = -1 if attribution_unreliable else 1
+
+    def _dir_of(g) -> str:
+        """Direction of a group once anchored to Stockfish (positive = good for mover)."""
+        return "positive" if (g.contribution * attr_sign) >= 0 else "negative"
 
     # ------------------------------------------------------------------
     # Simple explanation
@@ -287,7 +310,7 @@ def build(
         )
         if groups:
             top = groups[0]
-            simple_paragraphs.append(_sentence(top.group, top.direction, mover, enemy))
+            simple_paragraphs.append(_sentence(top.group, _dir_of(top), mover, enemy))
     elif is_complex:
         simple_paragraphs.append(
             f"The evaluation shifted about {_cp_str(loss_cp)} pawns against {mover}. "
@@ -303,7 +326,7 @@ def build(
         top_groups = [g for g in groups[:2] if abs(g.contribution) > 0.01]
         if top_groups:
             primary = top_groups[0]
-            s1 = _sentence(primary.group, primary.direction, mover, enemy)
+            s1 = _sentence(primary.group, _dir_of(primary), mover, enemy)
             simple_paragraphs.append(
                 f"The evaluation moved {_cp_str(abs(sf_delta))} pawns "
                 f"{'against' if quality in (MoveQuality.MISTAKE, MoveQuality.BLUNDER) else 'for'} "
@@ -311,7 +334,7 @@ def build(
             )
             if len(top_groups) > 1:
                 secondary = top_groups[1]
-                s2 = _sentence(secondary.group, secondary.direction, mover, enemy)
+                s2 = _sentence(secondary.group, _dir_of(secondary), mover, enemy)
                 simple_paragraphs.append(f"Additionally: {s2.lower()}")
 
         if best_move_san and quality not in (MoveQuality.BEST, MoveQuality.FORCED):
@@ -334,13 +357,14 @@ def build(
     complex_groups_out = []
     for g in groups:
         pct = abs(g.contribution) / total_attr * 100
+        direction = _dir_of(g)
         complex_groups_out.append({
             "group":          g.group,
-            "contribution_cp": round(g.contribution / 100, 2),
-            "direction":      g.direction,
+            "contribution_cp": round(g.contribution * attr_sign / 100, 2),
+            "direction":      direction,
             "pct_of_total":   round(pct, 1),
             "feature_count":  g.feature_count,
-            "sentence":       _sentence(g.group, g.direction, mover, enemy),
+            "sentence":       _sentence(g.group, direction, mover, enemy),
         })
 
     complex_note = (
@@ -366,6 +390,13 @@ def build(
         quality_glyph=glyph,
         quality_color=QUALITY_COLOR[quality],
         is_complex=is_complex,
+        attribution_unreliable=attribution_unreliable,
+        attribution_warning=(
+            "The NNUE attribution disagreed with Stockfish here and has been flipped "
+            "to match the engine's verdict. The single-position network likely misses "
+            "a tactic Stockfish sees, so treat the concept breakdown below with caution."
+            if attribution_unreliable else ""
+        ),
         simple_headline=simple_headline,
         simple_paragraphs=simple_paragraphs,
         complex_headline=complex_headline,

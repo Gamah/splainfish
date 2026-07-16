@@ -228,6 +228,9 @@ function esc(s) {
 
 function renderExplanation(m) {
   let attrHtml = '';
+  if (m.attribution_unreliable && m.attribution_warning) {
+    attrHtml += `<div class="attr-warning">⚠ ${esc(m.attribution_warning)}</div>`;
+  }
   if (m.complex_groups && m.complex_groups.length) {
     // Groups arrive sorted by |contribution| (biggest offset from 0 first).
     // Each half of the track is at most 50% wide; the largest magnitude fills it.

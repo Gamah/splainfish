@@ -191,6 +191,21 @@ export function build({
   const groups = result.groupedAttributions;
   const complex = isComplexPosition(groups);
 
+  // Anchor the attribution's overall direction to Stockfish's verdict. The
+  // internal NNUE forward pass can misjudge sharp/tactical positions, so when its
+  // net attribution points the opposite way from Stockfish's eval change for the
+  // mover (e.g. a queen blunder whose bars read positive because it grabbed a
+  // pawn), flip the whole picture so green/red matches the outcome, and flag the
+  // move as unreliable so the UI can caution the reader.
+  const moverSignedDelta = movingColor === WHITE ? sfDelta : -sfDelta;
+  const netContribution = groups.reduce((s, g) => s + g.contribution, 0);
+  const decisive = Math.abs(moverSignedDelta) >= 40; // ≥0.4 pawns: SF has a clear verdict
+  const attributionUnreliable = decisive && netContribution !== 0
+    && Math.sign(netContribution) !== Math.sign(moverSignedDelta);
+  const attrSign = attributionUnreliable ? -1 : 1;
+  // Direction of a group once anchored to Stockfish (positive = good for mover).
+  const dirOf = (g) => ((g.contribution * attrSign) >= 0 ? 'positive' : 'negative');
+
   const glyph = QUALITY_GLYPH[quality];
   const displayMove = glyph ? `${moveSan}${glyph}` : moveSan;
 
@@ -218,7 +233,7 @@ export function build({
       `improved ${mover}'s position.`,
     );
     if (groups.length) {
-      simpleParagraphs.push(sentence(groups[0].group, groups[0].direction, mover, enemy));
+      simpleParagraphs.push(sentence(groups[0].group, dirOf(groups[0]), mover, enemy));
     }
   } else if (complex) {
     simpleParagraphs.push(
@@ -234,14 +249,14 @@ export function build({
     const topGroups = groups.slice(0, 2).filter((g) => Math.abs(g.contribution) > 0.01);
     if (topGroups.length) {
       const primary = topGroups[0];
-      const s1 = sentence(primary.group, primary.direction, mover, enemy);
+      const s1 = sentence(primary.group, dirOf(primary), mover, enemy);
       const against = quality === MoveQuality.MISTAKE || quality === MoveQuality.BLUNDER
         ? 'against' : 'for';
       simpleParagraphs.push(
         `The evaluation moved ${cpStr(Math.abs(sfDelta))} pawns ${against} ${mover}. ${s1}`,
       );
       if (topGroups.length > 1) {
-        const s2 = sentence(topGroups[1].group, topGroups[1].direction, mover, enemy);
+        const s2 = sentence(topGroups[1].group, dirOf(topGroups[1]), mover, enemy);
         simpleParagraphs.push(`Additionally: ${s2.toLowerCase()}`);
       }
     }
@@ -258,14 +273,17 @@ export function build({
     `${QUALITY_LABEL[quality]}: ${displayMove}  [${signed(evalBefore)} → ${signed(evalAfter)}]`;
 
   const totalAttr = groups.reduce((s, g) => s + Math.abs(g.contribution), 0) || 1;
-  const complexGroups = groups.map((g) => ({
-    group: g.group,
-    contribution_cp: Math.round((g.contribution / 100) * 100) / 100,
-    direction: g.direction,
-    pct_of_total: Math.round((Math.abs(g.contribution) / totalAttr) * 100 * 10) / 10,
-    feature_count: g.featureCount,
-    sentence: sentence(g.group, g.direction, mover, enemy),
-  }));
+  const complexGroups = groups.map((g) => {
+    const dir = dirOf(g);
+    return {
+      group: g.group,
+      contribution_cp: Math.round((g.contribution * attrSign / 100) * 100) / 100,
+      direction: dir,
+      pct_of_total: Math.round((Math.abs(g.contribution) / totalAttr) * 100 * 10) / 10,
+      feature_count: g.featureCount,
+      sentence: sentence(g.group, dir, mover, enemy),
+    };
+  });
 
   const complexNote =
     'Contributions are derived by back-projecting the eval delta through the NNUE ' +
@@ -289,6 +307,12 @@ export function build({
     quality_glyph: glyph,
     quality_color: QUALITY_COLOR[quality],
     is_complex: complex,
+    attribution_unreliable: attributionUnreliable,
+    attribution_warning: attributionUnreliable
+      ? "The NNUE attribution disagreed with Stockfish here and has been flipped to "
+        + "match the engine's verdict. The single-position network likely misses a "
+        + 'tactic Stockfish sees, so treat the concept breakdown below with caution.'
+      : '',
     simple_headline: simpleHeadline,
     simple_paragraphs: simpleParagraphs,
     complex_headline: complexHeadline,
