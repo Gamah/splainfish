@@ -167,6 +167,8 @@ def analyse_game(
                 moving_color=moving_color,
                 best_move_san=best_move_san,
                 best_line_san=best_line_san,
+                sf_eval_before=sf_eval_before,
+                sf_eval_after=sf_eval_after,
             )
 
             d = dataclasses.asdict(expl)

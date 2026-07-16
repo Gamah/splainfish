@@ -242,16 +242,23 @@ def build(
     moving_color: chess.Color,
     best_move_san: Optional[str] = None,
     best_line_san: Optional[list[str]] = None,
+    sf_eval_before: Optional[int] = None,
+    sf_eval_after: Optional[int] = None,
 ) -> Explanation:
     mover = "White" if moving_color == chess.WHITE else "Black"
     enemy = "Black" if moving_color == chess.WHITE else "White"
 
-    quality = _classify_delta(result.delta_cp, moving_color)
-    # Loss from mover's perspective in cp
-    loss_cp = max(0, (-result.delta_cp if moving_color == chess.WHITE else result.delta_cp))
+    # Always use Stockfish actual evals for classification and display.
+    # Our internal forward pass cp is only used for attribution direction.
+    eval_before = sf_eval_before if sf_eval_before is not None else result.eval_before_cp
+    eval_after  = sf_eval_after  if sf_eval_after  is not None else result.eval_after_cp
+    sf_delta = eval_after - eval_before   # White perspective
+
+    quality = _classify_delta(sf_delta, moving_color)
+    loss_cp = max(0, (-sf_delta if moving_color == chess.WHITE else sf_delta))
 
     groups = result.grouped_attributions
-    is_complex = _is_complex(groups, result.delta_cp)
+    is_complex = _is_complex(groups, sf_delta)
 
     # ------------------------------------------------------------------
     # Simple explanation
@@ -285,7 +292,7 @@ def build(
             simple_paragraphs.append(_sentence(top.group, top.direction, mover, enemy))
     elif is_complex:
         simple_paragraphs.append(
-            f"The position shifted by about {_cp_str(loss_cp)} pawns against {mover}. "
+            f"The evaluation shifted about {_cp_str(loss_cp)} pawns against {mover}. "
             f"This position is quite complex — several factors contributed to the evaluation change "
             f"rather than one clear reason. The main themes were: "
             f"{', '.join(g.group for g in groups[:3])}."
@@ -300,7 +307,7 @@ def build(
             primary = top_groups[0]
             s1 = _sentence(primary.group, primary.direction, mover, enemy)
             simple_paragraphs.append(
-                f"The evaluation moved {_cp_str(abs(result.delta_cp))} pawns "
+                f"The evaluation moved {_cp_str(abs(sf_delta))} pawns "
                 f"{'against' if quality in (MoveQuality.MISTAKE, MoveQuality.BLUNDER) else 'for'} "
                 f"{mover}. {s1}"
             )
@@ -322,7 +329,7 @@ def build(
 
     complex_headline = (
         f"{QUALITY_LABEL[quality]}: {display_move}  "
-        f"[{result.eval_before_cp/100:+.2f} → {result.eval_after_cp/100:+.2f}]"
+        f"[{eval_before/100:+.2f} → {eval_after/100:+.2f}]"
     )
 
     total_attr = sum(abs(g.contribution) for g in groups) or 1.0
@@ -377,9 +384,9 @@ def build(
         fen_after=fen_after,
         move_number=move_number,
         color="white" if moving_color == chess.WHITE else "black",
-        eval_before_cp=result.eval_before_cp,
-        eval_after_cp=result.eval_after_cp,
-        delta_cp=result.delta_cp,
+        eval_before_cp=eval_before,
+        eval_after_cp=eval_after,
+        delta_cp=sf_delta,
         quality=quality.value,
         quality_label=QUALITY_LABEL[quality],
         quality_glyph=glyph,
