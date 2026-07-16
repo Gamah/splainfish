@@ -1,50 +1,24 @@
 /**
- * engine.js — Stockfish UCI engine, loaded from CDN at runtime.
+ * engine.js — Stockfish UCI engine, self-hosted and run as a Web Worker.
  *
- * Browser counterpart of splainfish/engine.py. Stockfish is not bundled; it is
- * fetched from a public CDN and instantiated as a Web Worker. Download progress
- * is reported so the UI can show a loading bar (the WASM is several MB).
+ * Browser counterpart of splainfish/engine.py. Stockfish is vendored alongside
+ * the app in web/vendor/ and served same-origin, so the worker loads it from a
+ * real URL and Emscripten fetches the wasm sitting next to the script. (Loading
+ * it from a CDN via a blob-URL worker failed to fetch the wasm inside the worker.)
  *
  * Only the single-threaded lite build is used: it needs no COOP/COEP headers
- * and therefore runs on GitHub Pages without a cross-origin-isolation shim.
+ * and therefore runs under any static host without a cross-origin-isolation shim.
  */
 
-const STOCKFISH_VERSION = '18.0.8';
-// jsDelivr rejects the stockfish package (over its 150 MB package cap), so use
-// unpkg, which serves the individual files with permissive CORS.
-const CDN_BASE = `https://unpkg.com/stockfish@${STOCKFISH_VERSION}/bin`;
-const ENGINE_JS = `${CDN_BASE}/stockfish-18-lite-single.js`;
-const ENGINE_WASM = `${CDN_BASE}/stockfish-18-lite-single.wasm`;
+// Stockfish 18.0.8 (lite, single-threaded) is self-hosted next to the app
+// (web/vendor/), NOT loaded from a CDN. Serving it same-origin lets the worker
+// load directly from a real URL so Emscripten resolves the .wasm sitting beside
+// the .js automatically — no blob URL, no shim, no cross-origin fetch (all of
+// which failed inside the worker). Resolved relative to this module's URL, so it
+// works under any deploy subpath.
+const ENGINE_JS = new URL('../vendor/stockfish-18-lite-single.js', import.meta.url);
 
 const MATE_CP = 30000;
-
-/** Fetch a URL as an ArrayBuffer, reporting progress via onProgress(frac,label). */
-async function fetchWithProgress(url, label, onProgress) {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`${label}: HTTP ${resp.status} from ${url}`);
-
-  const total = Number(resp.headers.get('content-length')) || 0;
-  if (!resp.body || !total) {
-    // No streaming or unknown length — fall back to a single opaque wait.
-    onProgress?.(null, label);
-    return await resp.arrayBuffer();
-  }
-
-  const reader = resp.body.getReader();
-  const chunks = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    onProgress?.(received / total, label);
-  }
-  const out = new Uint8Array(received);
-  let pos = 0;
-  for (const c of chunks) { out.set(c, pos); pos += c.length; }
-  return out.buffer;
-}
 
 /**
  * A parsed principal-variation line.
@@ -76,38 +50,39 @@ export class StockfishEngine {
   }
 
   /**
-   * Load Stockfish from the CDN and start it as a worker.
-   * onProgress(frac, label) is called during the WASM download; frac may be
-   * null when the length is unknown.
+   * Load Stockfish from the vendored same-origin script and start it as a worker.
+   * onProgress(frac, label) is called with a null frac (indeterminate) since the
+   * worker downloads its own wasm where we can't observe progress.
    */
   async load(onProgress) {
-    // Fetch the loader script and wasm so we can report progress, then hand the
-    // worker a blob URL that points the engine's locateFile at our wasm blob.
-    const [jsBuf, wasmBuf] = [
-      await fetchWithProgress(ENGINE_JS, 'engine', onProgress),
-      await fetchWithProgress(ENGINE_WASM, 'network', onProgress),
-    ];
+    // Load the worker straight from the same-origin vendored script. Emscripten's
+    // default locateFile resolves the .wasm next to it (same directory, same
+    // origin), so no blob URL, shim, or cross-origin fetch is involved. We can't
+    // observe the wasm download from here, so just show an indeterminate bar.
+    onProgress?.(null, 'network');
 
-    const wasmBlobUrl = URL.createObjectURL(
-      new Blob([wasmBuf], { type: 'application/wasm' }),
-    );
-
-    // Shim: define locateFile before the engine script runs so it uses our blob
-    // instead of trying to re-fetch the wasm by relative path.
-    const shim = `var Module={locateFile:function(p){return p.endsWith(".wasm")?${JSON.stringify(wasmBlobUrl)}:p;}};\n`;
-    const jsText = shim + new TextDecoder().decode(jsBuf);
-    const jsBlobUrl = URL.createObjectURL(
-      new Blob([jsText], { type: 'text/javascript' }),
-    );
-
-    this._worker = new Worker(jsBlobUrl);
+    this._worker = new Worker(ENGINE_JS);
     this._worker.onmessage = (e) => {
       const line = typeof e.data === 'string' ? e.data : e.data?.data ?? '';
       for (const fn of this._listeners) fn(line);
     };
+    // Without this, a worker/wasm init failure is swallowed and load() hangs
+    // forever on the uci handshake below, freezing the UI on the progress bar.
+    const workerError = new Promise((_, reject) => {
+      this._worker.onerror = (e) =>
+        reject(new Error(`Stockfish worker failed: ${e.message || 'wasm init error'}`));
+    });
 
-    await this._send('uci', (line) => line.includes('uciok'));
-    await this._send('isready', (line) => line.includes('readyok'));
+    const handshake = (async () => {
+      await this._send('uci', (line) => line.includes('uciok'));
+      await this._send('isready', (line) => line.includes('readyok'));
+    })();
+
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Stockfish load timed out after 30s')), 30_000),
+    );
+
+    await Promise.race([handshake, workerError, timeout]);
   }
 
   _onLine(fn) { this._listeners.add(fn); return () => this._listeners.delete(fn); }

@@ -15,6 +15,29 @@ import { build } from './explain.js';
 
 const MATE_CP = 30000;
 
+/**
+ * Strip movetext comments and variations so chess.js can parse annotated PGNs.
+ * chess.js 1.x's grammar rejects two consecutive {comment} blocks — which Lichess
+ * emits (an [%eval]/[%clk] comment next to the opening-name comment) — and we
+ * don't consume embedded evals or variation lines anyway (Stockfish recomputes
+ * them). Only the movetext is touched; the [Tag "..."] header block is preserved.
+ */
+export function sanitizePgn(pgn) {
+  const lines = pgn.split(/\r?\n/);
+  let i = 0;
+  const header = [];
+  for (; i < lines.length; i++) {
+    if (/^\s*\[.*\]\s*$/.test(lines[i]) || lines[i].trim() === '') header.push(lines[i]);
+    else break;
+  }
+  let mt = lines.slice(i).join('\n');
+  mt = mt.replace(/\{[^{}]*\}/g, ' ');            // comments (braces don't nest in PGN)
+  let prev;                                        // recursive variations (parens nest)
+  do { prev = mt; mt = mt.replace(/\([^()]*\)/g, ' '); } while (mt !== prev);
+  mt = mt.replace(/\$\d+/g, ' ').replace(/\s+/g, ' ').trim();  // numeric NAGs + whitespace
+  return `${header.join('\n').trimEnd()}\n\n${mt}\n`;
+}
+
 /** Stockfish reports from side-to-move; convert an analysis to White's frame. */
 function scoreCpWhite(pvLine, whiteToMove) {
   if (!pvLine) return 0;
@@ -57,7 +80,7 @@ export async function analyseGame({
 }) {
   const game = new Chess();
   try {
-    game.loadPgn(pgn);
+    game.loadPgn(sanitizePgn(pgn));
   } catch (err) {
     throw new Error(`Could not parse PGN: ${err.message}`);
   }

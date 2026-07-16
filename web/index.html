@@ -162,9 +162,18 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #eval-fill { position: absolute; top: 0; bottom: 0; left: 50%; border-radius: 5px; transition: width 0.3s, background 0.3s; }
 #eval-num { font-family: var(--mono); color: var(--text); min-width: 52px; text-align: right; }
 #board { width: min(440px, 88vw); aspect-ratio: 1; border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
-/* chessground board colours (rotaliate-toned) */
+/* chessground board colours (rotaliate-toned). chessground.base.css only lays
+   out geometry; it draws no squares, so paint the checkerboard ourselves. Each
+   board square is 12.5%, so a 25% conic tile (2x2 squares) repeated gives 8x8,
+   with a8 (top-left) light and a1 dark. */
 .cg-wrap { --cg-light: var(--sq-light); --cg-dark: var(--sq-dark); }
-cg-board { background-color: var(--sq-light); }
+cg-board {
+  background-color: var(--sq-light);
+  background-image: repeating-conic-gradient(
+    var(--sq-dark) 0 25%, var(--sq-light) 0 50%);
+  background-size: 25% 25%;
+  background-position: 0 0;
+}
 cg-board square.move-dest { background: rgba(91,141,239,0.3); }
 .board-controls { display: flex; gap: 8px; }
 .ctrl-btn {
@@ -306,9 +315,14 @@ cg-board square.move-dest { background: rgba(91,141,239,0.3); }
       deterministically from the NNUE activations — no language model involved. The
       attribution shows relative direction and emphasis, not calibrated centipawns.
     </p>
+    <p>
+      Curious what <em>Best</em>, <em>Inaccuracy</em>, or <em>Blunder</em> actually
+      mean, and how the thresholds are set? See
+      <a href="https://github.com/Gamah/splainfish/blob/master/docs/move-quality-labels.md" target="_blank" rel="noopener">the move-quality labels reference</a>.
+    </p>
     <h3>Built with</h3>
     <ul class="credits">
-      <li><strong>Stockfish</strong> — engine (WASM), loaded from CDN · GPL-3.0 · <a href="https://github.com/official-stockfish/Stockfish" target="_blank" rel="noopener">source</a></li>
+      <li><strong>Stockfish</strong> — engine (WASM), self-hosted · GPL-3.0 · <a href="https://github.com/official-stockfish/Stockfish" target="_blank" rel="noopener">source</a></li>
       <li><strong>chessground</strong> — board, by lichess · GPL-3.0 · <a href="https://github.com/lichess-org/chessground" target="_blank" rel="noopener">source</a></li>
       <li><strong>chess.js</strong> — move generation &amp; PGN · BSD-2 · <a href="https://github.com/jhlywa/chess.js" target="_blank" rel="noopener">source</a></li>
       <li><strong>rhosgfx pieces</strong> — by RhosGFX · CC0 · <a href="https://rhosgfx.itch.io/" target="_blank" rel="noopener">source</a></li>
